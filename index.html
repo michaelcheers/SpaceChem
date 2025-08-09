@@ -24,14 +24,19 @@
     <label><input type="radio" name="layer" value="red" checked>Red</label>
     <label><input type="radio" name="layer" value="blue">Blue</label>
 
-    Instruction:
-    <select id="instrSelect">
+    Arrow:
+    <select id="arrowSelect">
         <option value="">(none)</option>
-        <option value="start">START</option>
         <option value="right">→</option>
         <option value="left">←</option>
         <option value="up">↑</option>
         <option value="down">↓</option>
+    </select>
+
+    Instruction:
+    <select id="instrSelect">
+        <option value="">(none)</option>
+        <option value="start">START</option>
         <option value="grab">GRAB</option>
         <option value="drop">DROP</option>
         <option value="grabbdrop">GRAB-DROP</option>
@@ -66,6 +71,7 @@
     <button id="runBtn">Run</button>
     <button id="stepBtn">Step</button>
     <button id="clearBtn">Clear</button>
+    <button id="eraseBtn">Erase</button>
     <span class="info">Click grid to place instruction / machine</span>
 </div>
 
@@ -90,6 +96,8 @@ const ctx = canvas.getContext('2d');
 
 const instructionsRed = Array.from({length:gridH}, ()=>Array(gridW).fill(null));
 const instructionsBlue = Array.from({length:gridH}, ()=>Array(gridW).fill(null));
+const arrowsRed = Array.from({length:gridH}, ()=>Array(gridW).fill(null));
+const arrowsBlue = Array.from({length:gridH}, ()=>Array(gridW).fill(null));
 const machines = Array.from({length:gridH}, ()=>Array(gridW).fill(null));
 
 let atoms = []; // {id,type,x,y,held:false,bonds:[]}
@@ -99,6 +107,8 @@ const inputA = ['H','O','C','H','H'];
 const inputB = ['C','H','O','O'];
 let inputIndexA=0, inputIndexB=0;
 const outputsA=[], outputsB=[];
+
+let eraseMode = false;
 
 class Waldo {
     constructor(color) {
@@ -166,18 +176,31 @@ function drawMachines() {
 
 function drawInstructions() {
     ctx.font='16px monospace';
-    ctx.textAlign='left'; ctx.textBaseline='top';
     for(let y=0;y<gridH;y++){
         for(let x=0;x<gridW;x++){
-            const r = instructionsRed[y][x];
-            const b = instructionsBlue[y][x];
-            if(r){
+            const rInstr = instructionsRed[y][x];
+            const bInstr = instructionsBlue[y][x];
+            const rArrow = arrowsRed[y][x];
+            const bArrow = arrowsBlue[y][x];
+            if(rArrow){
                 ctx.fillStyle='rgba(255,0,0,0.8)';
-                ctx.fillText(symbolFor(r),x*cell+2,y*cell+2);
+                ctx.textAlign='center'; ctx.textBaseline='middle';
+                ctx.fillText(arrowSymbol(rArrow),x*cell+cell/2,y*cell+cell/2);
             }
-            if(b){
+            if(bArrow){
                 ctx.fillStyle='rgba(0,128,255,0.8)';
-                ctx.fillText(symbolFor(b),x*cell+cell-18,y*cell+cell-20);
+                ctx.textAlign='center'; ctx.textBaseline='middle';
+                ctx.fillText(arrowSymbol(bArrow),x*cell+cell/2,y*cell+cell/2);
+            }
+            if(rInstr){
+                ctx.fillStyle='rgba(255,0,0,0.8)';
+                ctx.textAlign='left'; ctx.textBaseline='top';
+                ctx.fillText(symbolFor(rInstr),x*cell+2,y*cell+2);
+            }
+            if(bInstr){
+                ctx.fillStyle='rgba(0,128,255,0.8)';
+                ctx.textAlign='right'; ctx.textBaseline='bottom';
+                ctx.fillText(symbolFor(bInstr),x*cell+cell-2,y*cell+cell-2);
             }
         }
     }
@@ -185,12 +208,16 @@ function drawInstructions() {
 
 function symbolFor(instr){
     const map={
-        start:'S',right:'→',left:'←',up:'↑',down:'↓',
-        grab:'G',drop:'D',grabbdrop:'GD',bond:'+',
+        start:'S',
+        grab:'G',drop:'D',grabbdrop:'GD',
         'bond+':'+','bond-':'-',sync:'Y',inA:'IA',inB:'IB',outA:'OA',outB:'OB',
         swap:'W',sense:'SN',fuse:'FU',split:'SP',rotate_cw:'RC',rotate_ccw:'RCC'
     };
     return map[instr] || '?';
+}
+
+function arrowSymbol(dir){
+    return {right:'→',left:'←',up:'↑',down:'↓'}[dir] || '?';
 }
 
 function drawAtoms() {
@@ -236,13 +263,30 @@ canvas.addEventListener('click', e=>{
     const y = Math.floor((e.clientY-rect.top)/cell);
     if(x<0 || x>=gridW || y<0 || y>=gridH) return;
 
+    const arrow = arrowSelect.value;
     const instr = instrSelect.value;
     const machine = machineSelect.value;
     const layer = document.querySelector('input[name="layer"]:checked').value;
 
+    if(eraseMode){
+        if(layer==='red'){
+            instructionsRed[y][x]=null; arrowsRed[y][x]=null;
+            if(startRed && startRed.x===x && startRed.y===y) startRed=null;
+        }else{
+            instructionsBlue[y][x]=null; arrowsBlue[y][x]=null;
+            if(startBlue && startBlue.x===x && startBlue.y===y) startBlue=null;
+        }
+        draw();
+        return;
+    }
+
     if(instr){
         if(layer==='red'){ instructionsRed[y][x]=instr; if(instr==='start') startRed={x,y}; }
         else { instructionsBlue[y][x]=instr; if(instr==='start') startBlue={x,y}; }
+    }
+    if(arrow){
+        if(layer==='red') arrowsRed[y][x]=arrow;
+        else arrowsBlue[y][x]=arrow;
     }
     if(machine) machines[y][x]=machine;
     draw();
@@ -279,9 +323,12 @@ function execute(waldo){
     }
 
     const instrLayer = waldo.color==='red'?instructionsRed:instructionsBlue;
+    const arrowLayer = waldo.color==='red'?arrowsRed:arrowsBlue;
     const instr = instrLayer[waldo.y][waldo.x];
+    const arrow = arrowLayer[waldo.y][waldo.x];
 
     handleInstruction(waldo,instr);
+    if(arrow) waldo.dir=arrow;
 
     // move forward
     const dir=waldo.dir;
@@ -294,10 +341,6 @@ function execute(waldo){
 function handleInstruction(waldo,instr){
     if(!instr) return;
     switch(instr){
-        case 'right': waldo.dir='right'; break;
-        case 'left': waldo.dir='left'; break;
-        case 'up': waldo.dir='up'; break;
-        case 'down': waldo.dir='down'; break;
         case 'grab':
             if(!waldo.holding){
                 const a = atomAt(waldo.x,waldo.y);
@@ -420,15 +463,22 @@ function rotateHeld(waldo,cw){
 
 runBtn.onclick = run;
 stepBtn.onclick = step;
+eraseBtn.onclick = function(){
+    eraseMode = !eraseMode;
+    eraseBtn.textContent = eraseMode ? 'Erase: ON' : 'Erase';
+};
 clearBtn.onclick = function(){
     for(let y=0;y<gridH;y++){
         instructionsRed[y].fill(null);
         instructionsBlue[y].fill(null);
+        arrowsRed[y].fill(null);
+        arrowsBlue[y].fill(null);
         machines[y].fill(null);
     }
     atoms=[]; inputIndexA=0; inputIndexB=0;
     red.reset(); blue.reset();
     startRed=startBlue=null;
+    eraseMode=false; eraseBtn.textContent='Erase';
     draw();
 };
 
