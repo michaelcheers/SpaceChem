@@ -1,1 +1,342 @@
-<html></html>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<title>SpaceChem JS Playground</title>
+<style>
+ body { font-family: sans-serif; }
+ #controls { margin-bottom:8px; }
+ #grid { border:1px solid #333; width:400px; height:320px;
+         display:grid; grid-template-columns:repeat(10,40px);
+         grid-template-rows:repeat(8,40px); position:relative;}
+ .cell { box-sizing:border-box; border:1px solid #888; position:relative; }
+ .cell .instr { position:absolute; width:100%; height:50%; font-size:12px;
+                display:flex; align-items:center; justify-content:center; }
+ .cell .instr.blue { top:50%; color:blue;}
+ .cell .instr.red { top:0; color:red;}
+ .waldo { position:absolute; width:10px; height:10px; border-radius:50%;
+          transform:translate(-5px,-5px); }
+ .waldo.red { background:red; }
+ .waldo.blue { background:blue; }
+ .machine { position:absolute; left:0; top:0; width:100%; height:100%; 
+            opacity:0.3; }
+ .machine.bonder { background:yellow; }
+</style>
+</head>
+<body>
+<div id="controls">
+Instruction: 
+<select id="instrSelect">
+ <option value="">(none)</option>
+ <option value="start">START</option>
+ <option value="arrow_r">→</option>
+ <option value="arrow_l">←</option>
+ <option value="arrow_u">↑</option>
+ <option value="arrow_d">↓</option>
+ <option value="grab">GRAB</option>
+ <option value="drop">DROP</option>
+ <option value="grabdrop">GRAB-DROP</option>
+ <option value="bond+">BOND+</option>
+ <option value="bond-">BOND-</option>
+ <option value="sync">SYNC</option>
+ <option value="inA">IN A</option>
+ <option value="inB">IN B</option>
+ <option value="outA">OUT A</option>
+ <option value="outB">OUT B</option>
+ <option value="rotate_cw">ROTATE CW</option>
+ <option value="rotate_ccw">ROTATE CCW</option>
+</select>
+Waldo: <select id="waldoSelect">
+ <option value="red">Red</option>
+ <option value="blue">Blue</option>
+</select>
+<button id="run">Run</button>
+<button id="reset">Reset</button>
+</div>
+<div id="grid"></div>
+<script>
+// constants
+const WIDTH=10, HEIGHT=8;
+const gridElem=document.getElementById('grid');
+const instrSelect=document.getElementById('instrSelect');
+const waldoSelect=document.getElementById('waldoSelect');
+
+const redInstr=[], blueInstr=[];
+for(let y=0;y<HEIGHT;y++){
+  redInstr[y]=Array(WIDTH).fill(null);
+  blueInstr[y]=Array(WIDTH).fill(null);
+}
+
+// machines example: pair of bonders
+const machines={'4,3':'bonder','5,3':'bonder'};
+
+function createGrid(){
+  for(let y=0;y<HEIGHT;y++){
+    for(let x=0;x<WIDTH;x++){
+      const cell=document.createElement('div');
+      cell.className='cell';
+      cell.dataset.x=x; cell.dataset.y=y;
+
+      if(machines[`${x},${y}`]){
+        const mach=document.createElement('div');
+        mach.className='machine '+machines[`${x},${y}`];
+        cell.appendChild(mach);
+      }
+
+      const redDiv=document.createElement('div');
+      redDiv.className='instr red';
+      const blueDiv=document.createElement('div');
+      blueDiv.className='instr blue';
+
+      cell.appendChild(redDiv);
+      cell.appendChild(blueDiv);
+
+      cell.addEventListener('click', ()=>{
+        const instr=instrSelect.value;
+        const waldo=waldoSelect.value;
+        const grid=(waldo==='red')?redInstr:blueInstr;
+        grid[y][x]=instr||null;
+        renderInstructions();
+      });
+
+      gridElem.appendChild(cell);
+    }
+  }
+}
+
+function renderInstructions(){
+  document.querySelectorAll('.cell').forEach(cell=>{
+    const x=+cell.dataset.x, y=+cell.dataset.y;
+    const red=redInstr[y][x], blue=blueInstr[y][x];
+    cell.querySelector('.instr.red').textContent=symbolFor(red);
+    cell.querySelector('.instr.blue').textContent=symbolFor(blue);
+  });
+}
+
+function symbolFor(instr){
+  switch(instr){
+    case 'start': return 'START';
+    case 'arrow_r': return '→';
+    case 'arrow_l': return '←';
+    case 'arrow_u': return '↑';
+    case 'arrow_d': return '↓';
+    case 'grab': return 'G';
+    case 'drop': return 'D';
+    case 'grabdrop': return 'GD';
+    case 'bond+': return 'B+';
+    case 'bond-': return 'B-';
+    case 'sync': return 'S';
+    case 'inA': return 'IN A';
+    case 'inB': return 'IN B';
+    case 'outA': return 'OUT A';
+    case 'outB': return 'OUT B';
+    case 'rotate_cw': return 'RCW';
+    case 'rotate_ccw': return 'RCCW';
+    default: return '';
+  }
+}
+
+createGrid();
+renderInstructions();
+
+// Atom/Molecule representation
+class Atom{
+  constructor(symbol,x,y){
+    this.symbol=symbol;
+    this.x=x;
+    this.y=y;
+    this.bonds=new Set();
+  }
+}
+function bond(a,b){ a.bonds.add(b); b.bonds.add(a); }
+function unbond(a,b){ a.bonds.delete(b); b.bonds.delete(a); }
+
+const atomMap=new Map(); // key "x,y" -> atom
+
+// Input queues for demo
+const inAQueue=[new Atom('H',0,0), new Atom('O',0,0)];
+const inBQueue=[new Atom('C',0,0)];
+
+// Waldos
+const dirOffsets={right:[1,0], left:[-1,0], up:[0,-1], down:[0,1]};
+class Waldo{
+  constructor(color){
+    this.color=color;
+    this.x=0; this.y=0;
+    this.dir='right';
+    this.holding=null; // array of atoms (molecule)
+    this.active=true;
+    this.elem=document.createElement('div');
+    this.elem.className='waldo '+color;
+    gridElem.appendChild(this.elem);
+  }
+  placeAtStart(instrGrid){
+    for(let y=0;y<HEIGHT;y++)for(let x=0;x<WIDTH;x++){
+      if(instrGrid[y][x]==='start'){ this.x=x; this.y=y; return; }
+    }
+    this.active=false;
+  }
+  step(instrGrid){
+    if(!this.active) return;
+    const instr=instrGrid[this.y][this.x];
+    executeInstruction(this,instr);
+    // move
+    const off=dirOffsets[this.dir];
+    this.x+=off[0]; this.y+=off[1];
+    if(this.x<0||this.x>=WIDTH||this.y<0||this.y>=HEIGHT){
+      this.active=false;
+    }
+  }
+  updateElem(){
+    this.elem.style.left=(this.x*40+20)+'px';
+    this.elem.style.top=(this.y*40+20)+'px';
+  }
+}
+
+const redWaldo=new Waldo('red');
+const blueWaldo=new Waldo('blue');
+
+function executeInstruction(waldo,instr){
+  switch(instr){
+    case 'arrow_r': waldo.dir='right'; break;
+    case 'arrow_l': waldo.dir='left'; break;
+    case 'arrow_u': waldo.dir='up'; break;
+    case 'arrow_d': waldo.dir='down'; break;
+    case 'grab':
+      grab(waldo); break;
+    case 'drop':
+      drop(waldo); break;
+    case 'grabdrop':
+      if(waldo.holding) drop(waldo); else grab(waldo); break;
+    case 'bond+':
+      doBond(waldo,true); break;
+    case 'bond-':
+      doBond(waldo,false); break;
+    case 'inA':
+      doIN(waldo,inAQueue); break;
+    case 'inB':
+      doIN(waldo,inBQueue); break;
+    case 'outA':
+    case 'outB':
+      doOUT(waldo); break;
+    case 'rotate_cw':
+      rotateHeld(waldo,1); break;
+    case 'rotate_ccw':
+      rotateHeld(waldo,-1); break;
+    // sync and others omitted for brevity
+  }
+}
+
+function grab(waldo){
+  const key=`${waldo.x},${waldo.y}`;
+  const atom=atomMap.get(key);
+  if(atom && !waldo.holding){
+    waldo.holding=[atom];
+    atomMap.delete(key);
+  }
+}
+
+function drop(waldo){
+  if(!waldo.holding) return;
+  for(const atom of waldo.holding){
+    atom.x=waldo.x;
+    atom.y=waldo.y;
+    atomMap.set(`${atom.x},${atom.y}`,atom);
+  }
+  waldo.holding=null;
+}
+
+function doIN(waldo,queue){
+  if(waldo.holding || queue.length===0) return;
+  const atom=queue.shift();
+  atom.x=waldo.x; atom.y=waldo.y;
+  waldo.holding=[atom];
+}
+
+function doOUT(waldo){
+  if(!waldo.holding) return;
+  waldo.holding=null; // discard for demo
+}
+
+function doBond(waldo,make){
+  const pos=`${waldo.x},${waldo.y}`;
+  if(machines[pos]!=='bonder') return;
+  const other=`${waldo.x+1},${waldo.y}`;
+  if(machines[other]!=='bonder') return;
+  const a=atomMap.get(pos);
+  const b=atomMap.get(other);
+  if(a && b){
+    if(make) bond(a,b); else unbond(a,b);
+  }
+}
+
+function rotateHeld(waldo,dir){
+  if(!waldo.holding) return;
+  // rotation around origin (0,0)
+  for(const atom of waldo.holding){
+    const rx=atom.x - waldo.x;
+    const ry=atom.y - waldo.y;
+    // rotate 90 degrees
+    const nx = dir===1 ? -ry : ry;
+    const ny = dir===1 ? rx : -rx;
+    atom.x=waldo.x+nx;
+    atom.y=waldo.y+ny;
+  }
+}
+
+// run loop
+let timer=null;
+document.getElementById('run').addEventListener('click',()=>{
+  resetWaldos();
+  if(timer) clearInterval(timer);
+  timer=setInterval(()=>{ 
+    redWaldo.step(redInstr); 
+    blueWaldo.step(blueInstr); 
+    redWaldo.updateElem(); 
+    blueWaldo.updateElem(); 
+  },500);
+});
+
+document.getElementById('reset').addEventListener('click',()=>{
+  resetWaldos();
+  renderAtoms();
+});
+
+function resetWaldos(){
+  redWaldo.placeAtStart(redInstr);
+  blueWaldo.placeAtStart(blueInstr);
+  redWaldo.dir='right';
+  blueWaldo.dir='right';
+  redWaldo.holding=null;
+  blueWaldo.holding=null;
+  redWaldo.active=true;
+  blueWaldo.active=true;
+  redWaldo.updateElem();
+  blueWaldo.updateElem();
+}
+
+function renderAtoms(){
+  document.querySelectorAll('.atom').forEach(e=>e.remove());
+  atomMap.forEach((atom,key)=>{
+    const atomElem=document.createElement('div');
+    atomElem.className='atom';
+    atomElem.style.position='absolute';
+    atomElem.style.left=(atom.x*40+12)+'px';
+    atomElem.style.top=(atom.y*40+12)+'px';
+    atomElem.style.width='16px';
+    atomElem.style.height='16px';
+    atomElem.style.borderRadius='50%';
+    atomElem.style.background='#ccc';
+    atomElem.textContent=atom.symbol;
+    atomElem.style.display='flex';
+    atomElem.style.alignItems='center';
+    atomElem.style.justifyContent='center';
+    atomElem.style.fontSize='10px';
+    gridElem.appendChild(atomElem);
+  });
+}
+
+renderAtoms();
+</script>
+</body>
+</html>
