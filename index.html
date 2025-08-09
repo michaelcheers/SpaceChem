@@ -105,6 +105,8 @@ let atomIdSeq = 1;
 
 const inputA = ['H','O','C','H','H'];
 const inputB = ['C','H','O','O'];
+const inputALoc = {x:0,y:0};
+const inputBLoc = {x:0,y:4};
 let inputIndexA=0, inputIndexB=0;
 const outputsA=[], outputsB=[];
 
@@ -121,6 +123,7 @@ class Waldo {
         this.holding = null;
         this.started = false;
         this.waiting = false;
+        this.resume = false;
     }
 }
 const red = new Waldo('red');
@@ -129,6 +132,10 @@ let startRed = null, startBlue = null;
 
 function atomAt(x,y) {
     return atoms.find(a => !a.held && a.x===x && a.y===y);
+}
+
+function atomAtAny(x,y) {
+    return atoms.find(a => a.x===x && a.y===y);
 }
 
 function drawGrid() {
@@ -314,12 +321,19 @@ function step(){
 }
 
 function execute(waldo){
-    if(!waldo.started) return;
+    if(!waldo.started || !running) return;
     // sync waiting?
     if(waldo.waiting){
         const other = waldo===red?blue:red;
-        if(!other.waiting) return;
+        if(!other.waiting) return; // wait for other waldo
         waldo.waiting=false; other.waiting=false;
+        waldo.resume=true; other.resume=true;
+        return;
+    }
+    if(waldo.resume){
+        waldo.resume=false;
+        moveForward(waldo);
+        return;
     }
 
     const instrLayer = waldo.color==='red'?instructionsRed:instructionsBlue;
@@ -329,13 +343,24 @@ function execute(waldo){
 
     handleInstruction(waldo,instr);
     if(arrow) waldo.dir=arrow;
+    if(waldo.waiting) return; // SYNC halts movement after arrow
 
-    // move forward
+    moveForward(waldo);
+}
+
+function moveForward(waldo){
     const dir=waldo.dir;
-    if(dir==='right') waldo.x=(waldo.x+1)%gridW;
-    if(dir==='left') waldo.x=(waldo.x+gridW-1)%gridW;
-    if(dir==='up') waldo.y=(waldo.y+gridH-1)%gridH;
-    if(dir==='down') waldo.y=(waldo.y+1)%gridH;
+    let nx=waldo.x, ny=waldo.y;
+    if(dir==='right') nx=waldo.x+1;
+    if(dir==='left') nx=waldo.x-1;
+    if(dir==='up') ny=waldo.y-1;
+    if(dir==='down') ny=waldo.y+1;
+    if(nx<0||nx>=gridW||ny<0||ny>=gridH){
+        running=false; clearInterval(timer); alert('Crash: '+waldo.color+' waldo hit wall');
+        return;
+    }
+    waldo.x=nx; waldo.y=ny;
+    if(waldo.holding){ waldo.holding.x=nx; waldo.holding.y=ny; }
 }
 
 function handleInstruction(waldo,instr){
@@ -362,29 +387,30 @@ function handleInstruction(waldo,instr){
                 if(a){ waldo.holding=a; a.held=true; a.holder=waldo; }
             }
             break;
-        case 'bond+': doBond(waldo,true); break;
-        case 'bond-': doBond(waldo,false); break;
-        case 'sync': waldo.waiting=true; break;
-        case 'inA': spawnInput('A',waldo); break;
-        case 'inB': spawnInput('B',waldo); break;
+        case 'bond+': doBond(true); break;
+        case 'bond-': doBond(false); break;
+        case 'sync': waldo.waiting=true; return; // halt immediately
+        case 'inA': spawnInput('A'); break;
+        case 'inB': spawnInput('B'); break;
         case 'outA': outputAtom('A',waldo); break;
         case 'outB': outputAtom('B',waldo); break;
         case 'swap': doSwap(); break;
-        case 'fuse': fuseAtoms(waldo); break;
-        case 'split': splitAtom(waldo); break;
+        case 'fuse': fuseAtoms(); break;
+        case 'split': splitAtom(); break;
         case 'rotate_cw': rotateHeld(waldo,true); break;
         case 'rotate_ccw': rotateHeld(waldo,false); break;
         // sense, sensors: left as extension; stub
     }
 }
 
-function spawnInput(ch, waldo){
+function spawnInput(ch){
     const list = ch==='A'?inputA:inputB;
     const idx = ch==='A'?inputIndexA:inputIndexB;
     if(idx>=list.length) return;
     const type=list[idx];
     if(ch==='A') inputIndexA++; else inputIndexB++;
-    const a={id:atomIdSeq++,type,x:waldo.x,y:waldo.y,held:false,bonds:[]};
+    const loc = ch==='A'?inputALoc:inputBLoc;
+    const a={id:atomIdSeq++,type,x:loc.x,y:loc.y,held:false,bonds:[]};
     atoms.push(a);
 }
 
@@ -396,22 +422,30 @@ function outputAtom(ch, waldo){
     waldo.holding=null;
 }
 
-function doBond(waldo,make){
-    const a = atomAt(waldo.x,waldo.y) || waldo.holding;
-    if(!a) return;
-    const dirs=[[1,0],[-1,0],[0,1],[0,-1]];
-    for(const [dx,dy] of dirs){
-        const nx=waldo.x+dx, ny=waldo.y+dy;
-        if(nx<0||nx>=gridW||ny<0||ny>=gridH) continue;
-        if(machines[ny][nx] && machines[ny][nx].startsWith('bonder')){
-            const b = atomAt(nx,ny) || (waldo.holding && waldo.holding.x===nx&&waldo.holding.y===ny?waldo.holding:null);
-            if(!b || b===a) continue;
-            if(make){
-                if(!a.bonds.includes(b)) a.bonds.push(b);
-                if(!b.bonds.includes(a)) b.bonds.push(a);
-            }else{
-                a.bonds=a.bonds.filter(x=>x!==b);
-                b.bonds=b.bonds.filter(x=>x!==a);
+function doBond(make){
+    for(let y=0;y<gridH;y++){
+        for(let x=0;x<gridW;x++){
+            const m=machines[y][x];
+            const valid = make ? (m==='bonder'||m==='bonder+') : (m==='bonder'||m==='bonder-');
+            if(!valid) continue;
+            const a=atomAtAny(x,y);
+            if(!a) continue;
+            const dirs=[[1,0],[0,1]]; // avoid double processing
+            for(const [dx,dy] of dirs){
+                const nx=x+dx, ny=y+dy;
+                if(nx>=gridW||ny>=gridH) continue;
+                const m2=machines[ny][nx];
+                const valid2 = make ? (m2==='bonder'||m2==='bonder+') : (m2==='bonder'||m2==='bonder-');
+                if(!valid2) continue;
+                const b=atomAtAny(nx,ny);
+                if(!b) continue;
+                if(make){
+                    if(!a.bonds.includes(b)) a.bonds.push(b);
+                    if(!b.bonds.includes(a)) b.bonds.push(a);
+                }else{
+                    a.bonds=a.bonds.filter(t=>t!==b);
+                    b.bonds=b.bonds.filter(t=>t!==a);
+                }
             }
         }
     }
@@ -427,32 +461,43 @@ function doSwap(){
     }
     if(swappersA.length && swappersB.length){
         const [a1,a2]=swappersA[0], [b1,b2]=swappersB[0];
-        const atA=atomAt(a1,a2), atB=atomAt(b1,b2);
+        const atA=atomAtAny(a1,a2), atB=atomAtAny(b1,b2);
         if(atA){ atA.x=b1; atA.y=b2; }
         if(atB){ atB.x=a1; atB.y=a2; }
     }
 }
 
 // simple placeholders for fuse/split/rotate to keep demo functional
-function fuseAtoms(waldo){
-    const a = atomAt(waldo.x,waldo.y);
-    const dirs=[[1,0],[-1,0],[0,1],[0,-1]];
-    for(const [dx,dy] of dirs){
-        const b=atomAt(waldo.x+dx, waldo.y+dy);
-        if(a && b){
-            b.type=a.type+b.type;
-            atoms=atoms.filter(x=>x!==a);
-            break;
+function fuseAtoms(){
+    for(let y=0;y<gridH;y++){
+        for(let x=0;x<gridW-1;x++){
+            if(machines[y][x]==='fuser' && machines[y][x+1]==='fuser'){
+                const a=atomAtAny(x,y);
+                const b=atomAtAny(x+1,y);
+                if(a && b){
+                    b.type=a.type+b.type;
+                    if(a.holder) a.holder.holding=null;
+                    atoms=atoms.filter(t=>t!==a);
+                }
+            }
         }
     }
 }
-function splitAtom(waldo){
-    const a = atomAt(waldo.x,waldo.y);
-    if(!a || a.type.length<2) return;
-    const t1=a.type[0], t2=a.type.slice(1);
-    a.type=t1;
-    const newAtom={id:atomIdSeq++,type:t2,x:waldo.x,y:waldo.y,held:false,bonds:[]};
-    atoms.push(newAtom);
+
+function splitAtom(){
+    for(let y=0;y<gridH;y++){
+        for(let x=0;x<gridW-1;x++){
+            if(machines[y][x]==='fissioner' && machines[y][x+1]==='fissioner'){
+                const a=atomAtAny(x,y);
+                if(a && a.type.length>=2){
+                    const t1=a.type[0], t2=a.type.slice(1);
+                    a.type=t1;
+                    const newAtom={id:atomIdSeq++,type:t2,x:x+1,y:y,held:false,bonds:[]};
+                    atoms.push(newAtom);
+                }
+            }
+        }
+    }
 }
 function rotateHeld(waldo,cw){
     // rotation placeholder: swap bonds order
