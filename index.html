@@ -1,1 +1,439 @@
-<html></html>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>SpaceChem HTML Playground</title>
+<style>
+    body { font-family: sans-serif; background:#222; color:#ddd; }
+    #toolbar {
+        padding:8px; margin-bottom:8px; background:#333;
+        display:flex; flex-wrap:wrap; align-items:center; gap:8px;
+    }
+    #board {
+        border:2px solid #555;
+        background:#000;
+        cursor:pointer;
+    }
+    select, button, label { font-size:14px; }
+    .info { margin-left:auto; font-size:12px; opacity:.8; }
+</style>
+</head>
+<body>
+<div id="toolbar">
+    Layer:
+    <label><input type="radio" name="layer" value="red" checked>Red</label>
+    <label><input type="radio" name="layer" value="blue">Blue</label>
+
+    Instruction:
+    <select id="instrSelect">
+        <option value="">(none)</option>
+        <option value="start">START</option>
+        <option value="right">→</option>
+        <option value="left">←</option>
+        <option value="up">↑</option>
+        <option value="down">↓</option>
+        <option value="grab">GRAB</option>
+        <option value="drop">DROP</option>
+        <option value="grabbdrop">GRAB-DROP</option>
+        <option value="bond+">BOND+</option>
+        <option value="bond-">BOND-</option>
+        <option value="sync">SYNC</option>
+        <option value="inA">IN A</option>
+        <option value="inB">IN B</option>
+        <option value="outA">OUT A</option>
+        <option value="outB">OUT B</option>
+        <option value="swap">SWAP</option>
+        <option value="sense">SENSE</option>
+        <option value="fuse">FUSE</option>
+        <option value="split">SPLIT</option>
+        <option value="rotate_cw">ROT CW</option>
+        <option value="rotate_ccw">ROT CCW</option>
+    </select>
+
+    Machine:
+    <select id="machineSelect">
+        <option value="">(none)</option>
+        <option value="bonder">Bonder</option>
+        <option value="bonder+">Bonder+</option>
+        <option value="bonder-">Bonder-</option>
+        <option value="fuser">Fuser</option>
+        <option value="fissioner">Fissioner</option>
+        <option value="swapperA">Swapper A</option>
+        <option value="swapperB">Swapper B</option>
+        <option value="sensor">Sensor</option>
+    </select>
+
+    <button id="runBtn">Run</button>
+    <button id="stepBtn">Step</button>
+    <button id="clearBtn">Clear</button>
+    <span class="info">Click grid to place instruction / machine</span>
+</div>
+
+<canvas id="board" width="500" height="400"></canvas>
+
+<script>
+/*
+  Basic SpaceChem HTML playground
+  -------------------------------
+  - 10×8 grid (50px tiles)
+  - Two instruction layers (red/blue)
+  - Basic instruction set per spec
+  - Machines: bonder(+/-), fuser, fissioner, swapper, sensor
+  - Waldos move simultaneously
+  - IO regions: 0-3 x 0-3 (inA), 0-3 x 4-7 (inB), 6-9 x 0-3 (outA), 6-9 x 4-7 (outB)
+  NOTE: This is a minimal educational implementation; it doesn’t contain puzzles or campaign UI.
+*/
+
+const gridW = 10, gridH = 8, cell = 50;
+const canvas = document.getElementById('board');
+const ctx = canvas.getContext('2d');
+
+const instructionsRed = Array.from({length:gridH}, ()=>Array(gridW).fill(null));
+const instructionsBlue = Array.from({length:gridH}, ()=>Array(gridW).fill(null));
+const machines = Array.from({length:gridH}, ()=>Array(gridW).fill(null));
+
+let atoms = []; // {id,type,x,y,held:false,bonds:[]}
+let atomIdSeq = 1;
+
+const inputA = ['H','O','C','H','H'];
+const inputB = ['C','H','O','O'];
+let inputIndexA=0, inputIndexB=0;
+const outputsA=[], outputsB=[];
+
+class Waldo {
+    constructor(color) {
+        this.color = color;
+        this.reset();
+    }
+    reset() {
+        this.x = -1; this.y = -1; // will be set on run
+        this.dir = 'right';
+        this.holding = null;
+        this.started = false;
+        this.waiting = false;
+    }
+}
+const red = new Waldo('red');
+const blue = new Waldo('blue');
+let startRed = null, startBlue = null;
+
+function atomAt(x,y) {
+    return atoms.find(a => !a.held && a.x===x && a.y===y);
+}
+
+function drawGrid() {
+    ctx.strokeStyle='#555';
+    for(let x=0;x<=gridW;x++){
+        ctx.beginPath();
+        ctx.moveTo(x*cell,0);
+        ctx.lineTo(x*cell,gridH*cell);
+        ctx.stroke();
+    }
+    for(let y=0;y<=gridH;y++){
+        ctx.beginPath();
+        ctx.moveTo(0,y*cell);
+        ctx.lineTo(gridW*cell,y*cell);
+        ctx.stroke();
+    }
+}
+
+function drawIO() {
+    ctx.fillStyle='rgba(0,128,0,0.2)';
+    ctx.fillRect(0,0,cell*4,cell*4);
+    ctx.fillRect(0,cell*4,cell*4,cell*4);
+    ctx.fillStyle='rgba(128,0,0,0.2)';
+    ctx.fillRect(cell*6,0,cell*4,cell*4);
+    ctx.fillRect(cell*6,cell*4,cell*4,cell*4);
+}
+
+function drawMachines() {
+    ctx.font='24px monospace';
+    ctx.textAlign='center'; ctx.textBaseline='middle';
+    for(let y=0;y<gridH;y++){
+        for(let x=0;x<gridW;x++){
+            if(!machines[y][x]) continue;
+            ctx.fillStyle='#222';
+            ctx.fillRect(x*cell,y*cell,cell,cell);
+            ctx.fillStyle='#0f0';
+            const m = machines[y][x];
+            const text = {
+                'bonder':'B','bonder+':'B+','bonder-':'B-','fuser':'F','fissioner':'S','swapperA':'A','swapperB':'B','sensor':'Sns'
+            }[m] || '?';
+            ctx.fillText(text,x*cell+cell/2,y*cell+cell/2);
+        }
+    }
+}
+
+function drawInstructions() {
+    ctx.font='16px monospace';
+    ctx.textAlign='left'; ctx.textBaseline='top';
+    for(let y=0;y<gridH;y++){
+        for(let x=0;x<gridW;x++){
+            const r = instructionsRed[y][x];
+            const b = instructionsBlue[y][x];
+            if(r){
+                ctx.fillStyle='rgba(255,0,0,0.8)';
+                ctx.fillText(symbolFor(r),x*cell+2,y*cell+2);
+            }
+            if(b){
+                ctx.fillStyle='rgba(0,128,255,0.8)';
+                ctx.fillText(symbolFor(b),x*cell+cell-18,y*cell+cell-20);
+            }
+        }
+    }
+}
+
+function symbolFor(instr){
+    const map={
+        start:'S',right:'→',left:'←',up:'↑',down:'↓',
+        grab:'G',drop:'D',grabbdrop:'GD',bond:'+',
+        'bond+':'+','bond-':'-',sync:'Y',inA:'IA',inB:'IB',outA:'OA',outB:'OB',
+        swap:'W',sense:'SN',fuse:'FU',split:'SP',rotate_cw:'RC',rotate_ccw:'RCC'
+    };
+    return map[instr] || '?';
+}
+
+function drawAtoms() {
+    ctx.textAlign='center'; ctx.textBaseline='middle';
+    for(const a of atoms){
+        const px = a.held ? (a.holder.x*cell+cell/2) : (a.x*cell+cell/2);
+        const py = a.held ? (a.holder.y*cell+cell/2) : (a.y*cell+cell/2);
+        ctx.fillStyle='#fff';
+        ctx.beginPath(); ctx.arc(px,py,14,0,Math.PI*2); ctx.fill();
+        ctx.fillStyle='#000'; ctx.fillText(a.type,px,py+1);
+        if(a.bonds){
+            ctx.strokeStyle='#0ff';
+            for(const b of a.bonds){
+                const bx = b.held? (b.holder.x*cell+cell/2):(b.x*cell+cell/2);
+                const by = b.held? (b.holder.y*cell+cell/2):(b.y*cell+cell/2);
+                ctx.beginPath(); ctx.moveTo(px,py); ctx.lineTo(bx,by); ctx.stroke();
+            }
+        }
+    }
+}
+
+function drawWaldos() {
+    ctx.fillStyle='red';
+    ctx.beginPath(); ctx.arc(red.x*cell+cell/2,red.y*cell+cell/2,10,0,Math.PI*2); ctx.fill();
+    ctx.fillStyle='deepskyblue';
+    ctx.beginPath(); ctx.arc(blue.x*cell+cell/2,blue.y*cell+cell/2,10,0,Math.PI*2); ctx.fill();
+}
+
+function draw() {
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+    drawGrid();
+    drawIO();
+    drawMachines();
+    drawInstructions();
+    drawAtoms();
+    drawWaldos();
+}
+
+// placing instructions & machines
+canvas.addEventListener('click', e=>{
+    const rect = canvas.getBoundingClientRect();
+    const x = Math.floor((e.clientX-rect.left)/cell);
+    const y = Math.floor((e.clientY-rect.top)/cell);
+    if(x<0 || x>=gridW || y<0 || y>=gridH) return;
+
+    const instr = instrSelect.value;
+    const machine = machineSelect.value;
+    const layer = document.querySelector('input[name="layer"]:checked').value;
+
+    if(instr){
+        if(layer==='red'){ instructionsRed[y][x]=instr; if(instr==='start') startRed={x,y}; }
+        else { instructionsBlue[y][x]=instr; if(instr==='start') startBlue={x,y}; }
+    }
+    if(machine) machines[y][x]=machine;
+    draw();
+});
+
+// -------------------------------------------------------
+// Simulation logic
+// -------------------------------------------------------
+
+let timer=null;
+let running=false;
+
+function run(){
+    if(running){ clearInterval(timer); running=false; runBtn.textContent='Run'; return;}
+    red.reset(); blue.reset();
+    if(startRed){ red.x=startRed.x; red.y=startRed.y; red.started=true; }
+    if(startBlue){ blue.x=startBlue.x; blue.y=startBlue.y; blue.started=true; }
+    running=true; runBtn.textContent='Stop';
+    timer=setInterval(step,400);
+}
+
+function step(){
+    execute(red); execute(blue);
+    draw();
+}
+
+function execute(waldo){
+    if(!waldo.started) return;
+    // sync waiting?
+    if(waldo.waiting){
+        const other = waldo===red?blue:red;
+        if(!other.waiting) return;
+        waldo.waiting=false; other.waiting=false;
+    }
+
+    const instrLayer = waldo.color==='red'?instructionsRed:instructionsBlue;
+    const instr = instrLayer[waldo.y][waldo.x];
+
+    handleInstruction(waldo,instr);
+
+    // move forward
+    const dir=waldo.dir;
+    if(dir==='right') waldo.x=(waldo.x+1)%gridW;
+    if(dir==='left') waldo.x=(waldo.x+gridW-1)%gridW;
+    if(dir==='up') waldo.y=(waldo.y+gridH-1)%gridH;
+    if(dir==='down') waldo.y=(waldo.y+1)%gridH;
+}
+
+function handleInstruction(waldo,instr){
+    if(!instr) return;
+    switch(instr){
+        case 'right': waldo.dir='right'; break;
+        case 'left': waldo.dir='left'; break;
+        case 'up': waldo.dir='up'; break;
+        case 'down': waldo.dir='down'; break;
+        case 'grab':
+            if(!waldo.holding){
+                const a = atomAt(waldo.x,waldo.y);
+                if(a){ waldo.holding=a; a.held=true; a.holder=waldo; }
+            }
+            break;
+        case 'drop':
+            if(waldo.holding){
+                waldo.holding.held=false; waldo.holding.x=waldo.x; waldo.holding.y=waldo.y;
+                waldo.holding.holder=null; waldo.holding=null;
+            }
+            break;
+        case 'grabbdrop':
+            if(waldo.holding){
+                waldo.holding.held=false; waldo.holding.x=waldo.x; waldo.holding.y=waldo.y;
+                waldo.holding.holder=null; waldo.holding=null;
+            }else{
+                const a = atomAt(waldo.x,waldo.y);
+                if(a){ waldo.holding=a; a.held=true; a.holder=waldo; }
+            }
+            break;
+        case 'bond+': doBond(waldo,true); break;
+        case 'bond-': doBond(waldo,false); break;
+        case 'sync': waldo.waiting=true; break;
+        case 'inA': spawnInput('A',waldo); break;
+        case 'inB': spawnInput('B',waldo); break;
+        case 'outA': outputAtom('A',waldo); break;
+        case 'outB': outputAtom('B',waldo); break;
+        case 'swap': doSwap(); break;
+        case 'fuse': fuseAtoms(waldo); break;
+        case 'split': splitAtom(waldo); break;
+        case 'rotate_cw': rotateHeld(waldo,true); break;
+        case 'rotate_ccw': rotateHeld(waldo,false); break;
+        // sense, sensors: left as extension; stub
+    }
+}
+
+function spawnInput(ch, waldo){
+    const list = ch==='A'?inputA:inputB;
+    const idx = ch==='A'?inputIndexA:inputIndexB;
+    if(idx>=list.length) return;
+    const type=list[idx];
+    if(ch==='A') inputIndexA++; else inputIndexB++;
+    const a={id:atomIdSeq++,type,x:waldo.x,y:waldo.y,held:false,bonds:[]};
+    atoms.push(a);
+}
+
+function outputAtom(ch, waldo){
+    if(!waldo.holding) return;
+    const outs = ch==='A'?outputsA:outputsB;
+    outs.push(waldo.holding.type);
+    atoms = atoms.filter(a=>a!==waldo.holding);
+    waldo.holding=null;
+}
+
+function doBond(waldo,make){
+    const a = atomAt(waldo.x,waldo.y) || waldo.holding;
+    if(!a) return;
+    const dirs=[[1,0],[-1,0],[0,1],[0,-1]];
+    for(const [dx,dy] of dirs){
+        const nx=waldo.x+dx, ny=waldo.y+dy;
+        if(nx<0||nx>=gridW||ny<0||ny>=gridH) continue;
+        if(machines[ny][nx] && machines[ny][nx].startsWith('bonder')){
+            const b = atomAt(nx,ny) || (waldo.holding && waldo.holding.x===nx&&waldo.holding.y===ny?waldo.holding:null);
+            if(!b || b===a) continue;
+            if(make){
+                if(!a.bonds.includes(b)) a.bonds.push(b);
+                if(!b.bonds.includes(a)) b.bonds.push(a);
+            }else{
+                a.bonds=a.bonds.filter(x=>x!==b);
+                b.bonds=b.bonds.filter(x=>x!==a);
+            }
+        }
+    }
+}
+
+function doSwap(){
+    const swappersA=[], swappersB=[];
+    for(let y=0;y<gridH;y++){
+        for(let x=0;x<gridW;x++){
+            if(machines[y][x]==='swapperA') swappersA.push([x,y]);
+            if(machines[y][x]==='swapperB') swappersB.push([x,y]);
+        }
+    }
+    if(swappersA.length && swappersB.length){
+        const [a1,a2]=swappersA[0], [b1,b2]=swappersB[0];
+        const atA=atomAt(a1,a2), atB=atomAt(b1,b2);
+        if(atA){ atA.x=b1; atA.y=b2; }
+        if(atB){ atB.x=a1; atB.y=a2; }
+    }
+}
+
+// simple placeholders for fuse/split/rotate to keep demo functional
+function fuseAtoms(waldo){
+    const a = atomAt(waldo.x,waldo.y);
+    const dirs=[[1,0],[-1,0],[0,1],[0,-1]];
+    for(const [dx,dy] of dirs){
+        const b=atomAt(waldo.x+dx, waldo.y+dy);
+        if(a && b){
+            b.type=a.type+b.type;
+            atoms=atoms.filter(x=>x!==a);
+            break;
+        }
+    }
+}
+function splitAtom(waldo){
+    const a = atomAt(waldo.x,waldo.y);
+    if(!a || a.type.length<2) return;
+    const t1=a.type[0], t2=a.type.slice(1);
+    a.type=t1;
+    const newAtom={id:atomIdSeq++,type:t2,x:waldo.x,y:waldo.y,held:false,bonds:[]};
+    atoms.push(newAtom);
+}
+function rotateHeld(waldo,cw){
+    // rotation placeholder: swap bonds order
+    if(!waldo.holding) return;
+    if(cw) waldo.holding.bonds.unshift(waldo.holding.bonds.pop());
+    else waldo.holding.bonds.push(waldo.holding.bonds.shift());
+}
+
+runBtn.onclick = run;
+stepBtn.onclick = step;
+clearBtn.onclick = function(){
+    for(let y=0;y<gridH;y++){
+        instructionsRed[y].fill(null);
+        instructionsBlue[y].fill(null);
+        machines[y].fill(null);
+    }
+    atoms=[]; inputIndexA=0; inputIndexB=0;
+    red.reset(); blue.reset();
+    startRed=startBlue=null;
+    draw();
+};
+
+draw(); // initial
+
+</script>
+</body>
+</html>
