@@ -1,1 +1,134 @@
-<html></html>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>SpaceChem JS Engine</title>
+<style>
+body{font-family:Arial,sans-serif;background:#111;color:#eee;text-align:center;}
+#controls{margin-bottom:10px;}
+canvas{background:#222;border:1px solid #555;}
+select,button{margin:0 5px;}
+</style>
+</head>
+<body>
+<h1>SpaceChem JS Engine</h1>
+<div id="controls">
+<label>Waldo:
+<select id="waldoSelect">
+<option value="red">Red</option>
+<option value="blue">Blue</option>
+</select></label>
+<label>Tool:
+<select id="toolSelect">
+<option value="arrow-up">↑</option>
+<option value="arrow-down">↓</option>
+<option value="arrow-left">←</option>
+<option value="arrow-right">→</option>
+<option value="start-up">START ↑</option>
+<option value="start-down">START ↓</option>
+<option value="start-left">START ←</option>
+<option value="start-right">START →</option>
+<option value="grab">GRAB</option>
+<option value="drop">DROP</option>
+<option value="grabdrop">GRAB/DROP</option>
+<option value="bond+">BOND+</option>
+<option value="bond-">BOND-</option>
+<option value="swap">SWAP</option>
+<option value="sync">SYNC</option>
+<option value="inA">IN A</option>
+<option value="inB">IN B</option>
+<option value="outA">OUT A</option>
+<option value="outB">OUT B</option>
+<option value="rotate-cw">ROTATE CW</option>
+<option value="rotate-ccw">ROTATE CCW</option>
+<option value="fuse">FUSE</option>
+<option value="split">SPLIT</option>
+<option value="sensor">SENSE</option>
+<option value="flipflop">FLIP-FLOP</option>
+<option value="bonder">BONDER</option>
+<option value="bonder+">BOND+ER</option>
+<option value="bonder-">BOND-ER</option>
+<option value="fuser">FUSER</option>
+<option value="fissioner">FISSIONER</option>
+<option value="swapper">SWAPPER</option>
+<option value="sensor-machine">SENSOR</option>
+</select></label>
+<button id="run">Run</button>
+<button id="step">Step</button>
+<button id="reset">Reset</button>
+</div>
+<canvas id="grid" width="400" height="320"></canvas>
+<script>
+const cellSize=40,cols=10,rows=8;
+const canvas=document.getElementById('grid');
+const ctx=canvas.getContext('2d');
+const waldoSelect=document.getElementById('waldoSelect');
+const toolSelect=document.getElementById('toolSelect');
+const runBtn=document.getElementById('run');
+const stepBtn=document.getElementById('step');
+const resetBtn=document.getElementById('reset');
+let running=false;let interval=null;
+
+// Grid data structure
+function makeCell(){return{machine:null,instructions:{red:null,blue:null},atoms:[]};}
+const grid=[];for(let y=0;y<rows;y++){const row=[];for(let x=0;x<cols;x++){row.push(makeCell());}grid.push(row);}
+
+// IO regions
+const inA={x0:0,y0:0,x1:3,y1:3};
+const inB={x0:0,y0:4,x1:3,y1:7};
+const outA={x0:6,y0:0,x1:9,y1:3};
+const outB={x0:6,y0:4,x1:9,y1:7};
+
+// Waldo object
+function makeWaldo(color){return{color,x:0,y:0,dir:'right',holding:[],wait:false,start:null,flip:false};}
+const redWaldo=makeWaldo('red');
+const blueWaldo=makeWaldo('blue');
+
+// Input/Output buffers
+let inputA=[[{type:'H'}],[{type:'H'},{type:'H'}]];
+let inputB=[[{type:'O'}]];
+let outputA=[];let outputB=[];
+
+// Drawing functions
+function draw(){ctx.clearRect(0,0,canvas.width,canvas.height);drawGrid();drawMachines();drawInstructions();drawAtoms();drawWaldos();}
+function drawGrid(){ctx.strokeStyle='#555';for(let x=0;x<=cols;x++){ctx.beginPath();ctx.moveTo(x*cellSize,0);ctx.lineTo(x*cellSize,rows*cellSize);ctx.stroke();}for(let y=0;y<=rows;y++){ctx.beginPath();ctx.moveTo(0,y*cellSize);ctx.lineTo(cols*cellSize,y*cellSize);ctx.stroke();}
+// highlight IO
+ctx.fillStyle='rgba(0,255,0,0.1)';ctx.fillRect(inA.x0*cellSize,inA.y0*cellSize,(inA.x1-inA.x0+1)*cellSize,(inA.y1-inA.y0+1)*cellSize);ctx.fillRect(inB.x0*cellSize,inB.y0*cellSize,(inB.x1-inB.x0+1)*cellSize,(inB.y1-inB.y0+1)*cellSize);
+ctx.fillStyle='rgba(0,0,255,0.1)';ctx.fillRect(outA.x0*cellSize,outA.y0*cellSize,(outA.x1-outA.x0+1)*cellSize,(outA.y1-outA.y0+1)*cellSize);ctx.fillRect(outB.x0*cellSize,outB.y0*cellSize,(outB.x1-outB.x0+1)*cellSize,(outB.y1-outB.y0+1)*cellSize);} 
+function drawMachines(){for(let y=0;y<rows;y++){for(let x=0;x<cols;x++){const m=grid[y][x].machine;if(!m)continue;ctx.fillStyle='#444';ctx.fillRect(x*cellSize+4,y*cellSize+4,cellSize-8,cellSize-8);ctx.fillStyle='white';ctx.font='10px Arial';ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText(m[0].toUpperCase(),x*cellSize+cellSize/2,y*cellSize+cellSize/2);}}
+}
+function drawInstructions(){for(let y=0;y<rows;y++){for(let x=0;x<cols;x++){const c=grid[y][x];if(c.instructions.red)drawInstr(x,y,c.instructions.red,'red');if(c.instructions.blue)drawInstr(x,y,c.instructions.blue,'blue');}}
+}
+function drawInstr(x,y,inst,color){ctx.fillStyle=color;ctx.font='12px Arial';ctx.textAlign='center';ctx.textBaseline='middle';let txt='';switch(inst){case'arrow-up':txt='↑';break;case'arrow-down':txt='↓';break;case'arrow-left':txt='←';break;case'arrow-right':txt='→';break;case'start-up':txt='S↑';break;case'start-down':txt='S↓';break;case'start-left':txt='S←';break;case'start-right':txt='S→';break;default:txt=inst;}
+ctx.fillText(txt,x*cellSize+cellSize/2,y*cellSize+cellSize/2);}
+function drawAtoms(){for(let y=0;y<rows;y++){for(let x=0;x<cols;x++){const atoms=grid[y][x].atoms;for(const a of atoms){ctx.fillStyle=a.type==='H'?'#0f0':'#0ff';ctx.beginPath();ctx.arc(x*cellSize+20,y*cellSize+20,10,0,Math.PI*2);ctx.fill();}}}}
+function drawWaldos(){drawWaldo(redWaldo);drawWaldo(blueWaldo);}function drawWaldo(w){ctx.fillStyle=w.color;ctx.beginPath();ctx.arc(w.x*cellSize+20,w.y*cellSize+20,8,0,Math.PI*2);ctx.fill();}
+
+draw();
+
+// Placement logic
+canvas.addEventListener('click',e=>{const rect=canvas.getBoundingClientRect();const x=Math.floor((e.clientX-rect.left)/cellSize);const y=Math.floor((e.clientY-rect.top)/cellSize);const tool=toolSelect.value;const waldo=waldoSelect.value;const cell=grid[y][x];if(tool==='bonder'||tool==='bonder+'||tool==='bonder-'||tool==='fuser'||tool==='fissioner'||tool==='swapper'||tool==='sensor-machine'){cell.machine=tool;}else{cell.instructions[waldo]=tool;if(tool.startsWith('start')){const dir=tool.split('-')[1];const w=waldo==='red'?redWaldo:blueWaldo;w.x=x;w.y=y;w.dir=dir;w.start={x,y,dir};}}
+draw();});
+
+// Simulation
+function step(){processWaldo(redWaldo);processWaldo(blueWaldo);if(redWaldo.wait&&blueWaldo.wait){redWaldo.wait=blueWaldo.wait=false;}draw();}
+function processWaldo(w){if(w.wait)return;const cell=grid[w.y][w.x];const instr=cell.instructions[w.color];if(instr)execute(w,cell,instr);if(!w.wait)move(w);} 
+function execute(w,cell,instr){switch(instr){case'arrow-up':w.dir='up';break;case'arrow-down':w.dir='down';break;case'arrow-left':w.dir='left';break;case'arrow-right':w.dir='right';break;case'start-up':w.dir='up';break;case'start-down':w.dir='down';break;case'start-left':w.dir='left';break;case'start-right':w.dir='right';break;case'grab':if(w.holding.length===0&&cell.atoms.length){w.holding=cell.atoms.splice(0);};break;case'drop':if(w.holding.length&&cell.atoms.length===0){cell.atoms=w.holding;w.holding=[];}break;case'grabdrop':if(w.holding.length===0&&cell.atoms.length){w.holding=cell.atoms.splice(0);}else if(w.holding.length&&cell.atoms.length===0){cell.atoms=w.holding;w.holding=[];}break;case'bond+':if((cell.machine==='bonder'||cell.machine==='bonder+' )&&w.holding.length>=2){createBond(w.holding[0],w.holding[1]);}break;case'bond-':if((cell.machine==='bonder'||cell.machine==='bonder-')&&w.holding.length>=2){breakBond(w.holding[0],w.holding[1]);}break;case'swap':if(cell.machine==='swapper'){swapAt(cell);}break;case'sync':w.wait=true;break;case'inA':if(w.holding.length===0&&pointInRegion(w.x,w.y,inA)&&inputA.length){w.holding=inputA.shift();}break;case'inB':if(w.holding.length===0&&pointInRegion(w.x,w.y,inB)&&inputB.length){w.holding=inputB.shift();}break;case'outA':if(w.holding.length&&pointInRegion(w.x,w.y,outA)){outputA.push(w.holding);w.holding=[];}break;case'outB':if(w.holding.length&&pointInRegion(w.x,w.y,outB)){outputB.push(w.holding);w.holding=[];}break;case'rotate-cw':rotate(w.holding,'cw');break;case'rotate-ccw':rotate(w.holding,'ccw');break;case'fuse':if(cell.machine==='fuser'&&w.holding.length>=2){fuseAtoms(w.holding);}break;case'split':if(cell.machine==='fissioner'&&w.holding.length){splitAtom(w);}break;case'sensor':if(cell.machine==='sensor-machine'){/* stub */}break;case'flipflop':w.flip=!w.flip;break;}}
+function move(w){const dir=w.dir;let nx=w.x,ny=w.y;if(dir==='up')ny--;if(dir==='down')ny++;if(dir==='left')nx--;if(dir==='right')nx++;if(nx<0||nx>=cols||ny<0||ny>=rows){nx=w.x;ny=w.y;}w.x=nx;w.y=ny;}
+
+// Helper functions
+function pointInRegion(x,y,r){return x>=r.x0&&x<=r.x1&&y>=r.y0&&y<=r.y1;}
+function createBond(a,b){if(!a.bonds)a.bonds=[];if(!b.bonds)b.bonds=[];if(!a.bonds.includes(b)){a.bonds.push(b);b.bonds.push(a);}}
+function breakBond(a,b){if(!a.bonds||!b.bonds)return;a.bonds=a.bonds.filter(x=>x!==b);b.bonds=b.bonds.filter(x=>x!==a);}
+function swapAt(cell){if(!swapA){swapA=cell;}else{const temp=swapA.atoms;swapA.atoms=cell.atoms;cell.atoms=temp;swapA=null;}}
+let swapA=null;
+function rotate(atoms,dir){/* rotation placeholder */}
+function fuseAtoms(atoms){if(atoms.length<2)return;const t=atoms.reduce((s,a)=>s+(a.mass||1),0);atoms.splice(0,atoms.length,{type:'X',mass:t});}
+function splitAtom(w){if(!w.holding.length)return;const a=w.holding[0];if((a.mass||2)>1){const half=(a.mass||2)/2;w.holding=[{type:'X',mass:half},{type:'X',mass:half}];}}
+
+// Controls
+runBtn.onclick=()=>{if(running){clearInterval(interval);running=false;runBtn.textContent='Run';}else{interval=setInterval(step,500);running=true;runBtn.textContent='Stop';}};
+stepBtn.onclick=step;resetBtn.onclick=()=>{running=false;clearInterval(interval);runBtn.textContent='Run';for(let y=0;y<rows;y++)for(let x=0;x<cols;x++){grid[y][x]=makeCell();}redWaldo.x=blueWaldo.x=0;redWaldo.y=blueWaldo.y=0;redWaldo.dir='right';blueWaldo.dir='right';redWaldo.holding=[];blueWaldo.holding=[];draw();};
+</script>
+</body>
+</html>
